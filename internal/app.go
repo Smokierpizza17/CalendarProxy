@@ -254,6 +254,9 @@ func (a *App) cleanEvent(event *ics.VEvent, filterToken string) bool {
 		location = strings.ReplaceAll(l.Value, "\\", "")
 	}
 
+	// additional check to remove CAx SKDT-Praktikum Sprechstunden
+	keepEvent = !(strings.Contains(summary, "CAx 2 - Praktikum Skizzier- und Darstellungstechniken") && description == "fix; Abhaltung; Teilnahme freiwillig")
+
 	if filterToken == "vo" { // keep only events with "VO" in summary
 		keepEvent = strings.Contains(summary, "VO")
 	} else if filterToken == "pr" { // keep only events with "FA" in summary
