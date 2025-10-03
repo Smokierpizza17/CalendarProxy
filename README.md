@@ -14,7 +14,8 @@ Additionally, I've implemented filtering the calendar into Vorlesungen, Prüfung
 .../?pStud=ABCDEF&pToken=XYZ             <-- calendar with everything
 .../?pStud=ABCDEF&pToken=XYZ&filter=vo   <-- only Vorlesungen
 .../?pStud=ABCDEF&pToken=XYZ&filter=pr   <-- only Prüfungen
-.../?pStud=ABCDEF&pToken=XYZ&filter=ot   <-- everything ex. Vorlesungen/Prüfungen
+.../?pStud=ABCDEF&pToken=XYZ&filter=pk   <-- only Praktika
+.../?pStud=ABCDEF&pToken=XYZ&filter=ot   <-- everything ex. Vorlesungen/Prüfungen/Praktika
 ```
 
 Additional features:
