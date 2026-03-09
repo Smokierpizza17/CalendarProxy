@@ -120,7 +120,6 @@ func getUrl(c *gin.Context) (string, string) {
 	pers := c.Query("pPers")
 	token := c.Query("pToken")
 	filter := c.Query("filter")
-	filterToken := "none"
 	if (stud == "" && pers == "") || token == "" {
 		// Missing parameters: just serve our landing page
 		f, err := static.Open("static/index.html")
@@ -137,18 +136,14 @@ func getUrl(c *gin.Context) (string, string) {
 		}
 		return "", ""
 	}
-	if filter == "vo" {
-		filterToken = "vo"
-	} else if filter == "pr" {
-		filterToken = "pr"
-	} else if filter == "ot" {
-		filterToken = "other"
+	if filter == "" {
+		filter = "none"
 	}
 
 	if stud == "" {
-		return fmt.Sprintf("https://campus.tum.de/tumonlinej/ws/termin/ical?pPers=%s&pToken=%s", pers, token), filterToken
+		return fmt.Sprintf("https://campus.tum.de/tumonlinej/ws/termin/ical?pPers=%s&pToken=%s", pers, token), filter
 	}
-	return fmt.Sprintf("https://campus.tum.de/tumonlinej/ws/termin/ical?pStud=%s&pToken=%s", stud, token), filterToken
+	return fmt.Sprintf("https://campus.tum.de/tumonlinej/ws/termin/ical?pStud=%s&pToken=%s", stud, token), filter
 }
 
 func (a *App) handleIcal(c *gin.Context) {
@@ -261,8 +256,10 @@ func (a *App) cleanEvent(event *ics.VEvent, filterToken string) bool {
 		keepEvent = strings.Contains(summary, "VO")
 	} else if filterToken == "pr" { // keep only events with "FA" in summary
 		keepEvent = strings.Contains(summary, "FA")
-	} else if filterToken == "other" { // keep only events without "VO" or "FA" in summary
-		keepEvent = !(strings.Contains(summary, "VO") || strings.Contains(summary, "FA"))
+	} else if filterToken == "pk" { // keep only events with "PR" in summary
+		keepEvent = strings.Contains(summary, "PR")
+	} else if filterToken == "ot" { // keep only events without "VO" or "FA" in summary
+		keepEvent = !(strings.Contains(summary, "VO") || strings.Contains(summary, "FA") || strings.Contains(summary, "PR"))
 	} // else, keepEvent stays true regardless
 
 	//Remove the TAG and anything after e.g.: (IN0001) or [MA0001]
