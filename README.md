@@ -45,6 +45,6 @@ To run the service locally, follow these steps:
 To build an image using Docker, follow these steps:
 
 - ```sh
-  docker compose -f docker-compose.yaml up --build
+  docker compose -f docker-compose.yml up --build
   ```
 - The service will be available at <http://localhost:4321>
