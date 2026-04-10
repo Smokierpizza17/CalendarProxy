@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	ics "github.com/arran4/golang-ical"
 	"github.com/getsentry/sentry-go"
@@ -25,6 +26,9 @@ var buildingsJson string
 //go:embed static
 var static embed.FS
 
+//go:embed filters/*.json
+var filtersFS embed.FS
+
 // Version is injected at build time by the compiler with the correct git-commit-sha or "dev" in development
 var Version = "dev"
 
@@ -33,11 +37,90 @@ type App struct {
 
 	courseReplacements   []*Replacement
 	buildingReplacements map[string]string
+	berlinLocation       *time.Location
 }
 
 type Replacement struct {
 	key   string
 	value string
+}
+
+type FilterRule struct {
+	Summary  string `json:"summary"`
+	Time     string `json:"time"`
+	Action   string `json:"action"` // "keep" or "delete"
+	Priority int    `json:"priority,omitempty"`
+}
+
+type Filter struct {
+	Rules []FilterRule `json:"rules"`
+}
+
+type TimeRange struct {
+	DayOfWeek time.Weekday
+	Start     time.Duration // minutes since midnight
+	End       time.Duration // minutes since midnight
+}
+
+func parseTimeRange(timeStr string) (*TimeRange, error) {
+	parts := strings.Split(timeStr, " ")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid time format: %s", timeStr)
+	}
+	dayStr := strings.ToLower(parts[0])
+	timeRangeStr := parts[1]
+
+	var day time.Weekday
+	switch dayStr {
+	case "sun":
+		day = time.Sunday
+	case "mon":
+		day = time.Monday
+	case "tue":
+		day = time.Tuesday
+	case "wed":
+		day = time.Wednesday
+	case "thu":
+		day = time.Thursday
+	case "fri":
+		day = time.Friday
+	case "sat":
+		day = time.Saturday
+	default:
+		return nil, fmt.Errorf("invalid day: %s", dayStr)
+	}
+
+	timeParts := strings.Split(timeRangeStr, "-")
+	if len(timeParts) != 2 {
+		return nil, fmt.Errorf("invalid time range: %s", timeRangeStr)
+	}
+
+	start, err := parseTime(timeParts[0])
+	if err != nil {
+		return nil, err
+	}
+	end, err := parseTime(timeParts[1])
+	if err != nil {
+		return nil, err
+	}
+
+	return &TimeRange{DayOfWeek: day, Start: start, End: end}, nil
+}
+
+func parseTime(timeStr string) (time.Duration, error) {
+	t, err := time.Parse("15:04", timeStr)
+	if err != nil {
+		return 0, err
+	}
+	return time.Duration(t.Hour()*60+t.Minute()) * time.Minute, nil
+}
+
+func (tr *TimeRange) matches(eventTime time.Time) bool {
+	if eventTime.Weekday() != tr.DayOfWeek {
+		return false
+	}
+	minutes := time.Duration(eventTime.Hour()*60+eventTime.Minute()) * time.Minute
+	return minutes >= tr.Start && minutes < tr.End
 }
 
 // for sorting replacements by length, then alphabetically
@@ -54,6 +137,13 @@ func (r1 *Replacement) isLessThan(r2 *Replacement) bool {
 func newApp() (*App, error) {
 	a := App{}
 
+	// Load Berlin time zone for filter time rules
+	loc, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		return nil, err
+	}
+	a.berlinLocation = loc
+
 	// courseReplacements is a map of course names to shortened names.
 	// We sort it by length, then alphabetically to ensure a consistent execution order
 	var rawCourseReplacements map[string]string
@@ -69,6 +159,52 @@ func newApp() (*App, error) {
 		return nil, err
 	}
 	return &a, nil
+}
+
+func (a *App) loadFilters(jsonFilterTokens []string) (*Filter, error) {
+	if len(jsonFilterTokens) == 0 {
+		return nil, nil
+	}
+
+	combined := Filter{}
+	var loadErrors []string
+	for _, token := range jsonFilterTokens {
+		if token == "" || token == "none" {
+			continue
+		}
+		filePath := fmt.Sprintf("filters/%s.json", token)
+		data, err := filtersFS.ReadFile(filePath)
+		if err != nil {
+			loadErrors = append(loadErrors, fmt.Sprintf("%s: %v", token, err))
+			continue
+		}
+		var filter Filter
+		if err := json.Unmarshal(data, &filter); err != nil {
+			loadErrors = append(loadErrors, fmt.Sprintf("%s: %v", token, err))
+			continue
+		}
+		// Set default priority to 1 if not set
+		for i := range filter.Rules {
+			if filter.Rules[i].Priority == 0 {
+				filter.Rules[i].Priority = 1
+			}
+		}
+		combined.Rules = append(combined.Rules, filter.Rules...)
+	}
+
+	if len(combined.Rules) == 0 && len(loadErrors) > 0 {
+		return nil, fmt.Errorf(strings.Join(loadErrors, "; "))
+	}
+	if len(combined.Rules) == 0 {
+		return nil, nil
+	}
+
+	// Sort rules by priority (ascending), stable sort maintains file and within-file order for equal priorities
+	sort.SliceStable(combined.Rules, func(i, j int) bool {
+		return combined.Rules[i].Priority < combined.Rules[j].Priority
+	})
+
+	return &combined, nil
 }
 
 func (a *App) Run() error {
@@ -115,39 +251,58 @@ func (a *App) configRoutes() {
 	})
 }
 
-func getUrl(c *gin.Context) (string, string) {
+func getUrl(c *gin.Context) (string, []string) {
 	stud := c.Query("pStud")
 	pers := c.Query("pPers")
 	token := c.Query("pToken")
-	filter := c.Query("filter")
+
+	var jsonFilterTokens []string
+	for _, rawValue := range c.QueryArray("jsonFilter") {
+		for _, token := range strings.Split(rawValue, ",") {
+			token = strings.TrimSpace(token)
+			if token != "" {
+				jsonFilterTokens = append(jsonFilterTokens, token)
+			}
+		}
+	}
+	if len(jsonFilterTokens) == 0 {
+		if raw := c.Query("jsonFilter"); raw != "" {
+			for _, token := range strings.Split(raw, ",") {
+				token = strings.TrimSpace(token)
+				if token != "" {
+					jsonFilterTokens = append(jsonFilterTokens, token)
+				}
+			}
+		}
+	}
 	if (stud == "" && pers == "") || token == "" {
 		// Missing parameters: just serve our landing page
 		f, err := static.Open("static/index.html")
 		if err != nil {
 			sentry.CaptureException(err)
 			c.AbortWithStatusJSON(http.StatusInternalServerError, err)
-			return "", ""
+			return "", nil
 		}
 
 		if _, err := io.Copy(c.Writer, f); err != nil {
 			sentry.CaptureException(err)
 			c.AbortWithStatusJSON(http.StatusInternalServerError, err)
-			return "", ""
+			return "", nil
 		}
-		return "", ""
+		return "", nil
 	}
-	if filter == "" {
-		filter = "none"
+	if len(jsonFilterTokens) == 0 {
+		jsonFilterTokens = nil
 	}
 
 	if stud == "" {
-		return fmt.Sprintf("https://campus.tum.de/tumonlinej/ws/termin/ical?pPers=%s&pToken=%s", pers, token), filter
+		return fmt.Sprintf("https://campus.tum.de/tumonlinej/ws/termin/ical?pPers=%s&pToken=%s", pers, token), jsonFilterTokens
 	}
-	return fmt.Sprintf("https://campus.tum.de/tumonlinej/ws/termin/ical?pStud=%s&pToken=%s", stud, token), filter
+	return fmt.Sprintf("https://campus.tum.de/tumonlinej/ws/termin/ical?pStud=%s&pToken=%s", stud, token), jsonFilterTokens
 }
 
 func (a *App) handleIcal(c *gin.Context) {
-	url, filterToken := getUrl(c)
+	url, jsonFilterTokens := getUrl(c)
 	if url == "" {
 		return
 	}
@@ -156,13 +311,23 @@ func (a *App) handleIcal(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, err)
 		return
 	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("HTTP error from calendar API: %d %s\n", resp.StatusCode, resp.Status)
+		c.AbortWithStatusJSON(http.StatusInternalServerError, fmt.Errorf("calendar API returned %d", resp.StatusCode))
+		return
+	}
+
 	all, err := io.ReadAll(resp.Body)
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, err)
 		return
 	}
-	cleaned, err := a.getCleanedCalendar(all, filterToken)
+	cleaned, err := a.getCleanedCalendar(all, jsonFilterTokens)
 	if err != nil {
+		sentry.CaptureException(err)
+		fmt.Printf("Error in getCleanedCalendar: %v\n", err)
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
@@ -175,10 +340,16 @@ func (a *App) handleIcal(c *gin.Context) {
 	}
 }
 
-func (a *App) getCleanedCalendar(all []byte, filterToken string) (*ics.Calendar, error) {
+func (a *App) getCleanedCalendar(all []byte, jsonFilterTokens []string) (*ics.Calendar, error) {
 	cal, err := ics.ParseCalendar(strings.NewReader(string(all)))
 	if err != nil {
 		return nil, err
+	}
+
+	filter, err := a.loadFilters(jsonFilterTokens)
+	if err != nil {
+		fmt.Printf("Failed to load filters %v: %v\n", jsonFilterTokens, err)
+		filter = nil
 	}
 
 	// Create map that tracks if we have allready seen a lecture name & datetime (e.g. "lecturexyz-1.2.2024 10:00" -> true)
@@ -194,7 +365,7 @@ func (a *App) getCleanedCalendar(all []byte, filterToken string) (*ics.Calendar,
 				continue
 			}
 			hasLecture[dedupKey] = true // mark event as seen
-			keepEvent := a.cleanEvent(event, filterToken)
+			keepEvent := a.cleanEvent(event, filter)
 			if keepEvent {
 				newComponents = append(newComponents, event)
 			}
@@ -208,7 +379,7 @@ func (a *App) getCleanedCalendar(all []byte, filterToken string) (*ics.Calendar,
 
 // matches tags like (IN0001) or [MA2012] and everything after.
 // unfortunate also matches wrong brackets like [MA123) but hey…
-var reTag = regexp.MustCompile(` ?[\[(](ED|MW|SOM|CIT|MA|IN|WI|WIB|CH)[0-9]+((_|-|,)[a-zA-Z0-9]+)*[a-z]?[\])].*`)
+var reTag = regexp.MustCompile(` ?[\[(](ED|MW|SOM|CIT|MA|IN|WI|WIB|CH)[0-9]+((_|-|,|n)[a-zA-Z0-9]+)*[a-z]?[\])].*`)
 
 // Matches location and teacher from language course title
 var reLoc = regexp.MustCompile(` ?(München|Garching|Weihenstephan).+`)
@@ -232,11 +403,50 @@ var unneeded = []string{
 // matches strings like: (5612.03.017), (5612.EG.017), (5612.EG.010B)
 var reNavigaTUM = regexp.MustCompile(`\((\d{4})\.[a-zA-Z0-9]{2}\.\d{3}[A-Z]?\)`)
 
-func (a *App) cleanEvent(event *ics.VEvent, filterToken string) bool {
+func (a *App) cleanEvent(event *ics.VEvent, filter *Filter) bool {
 	summary := ""
 	keepEvent := true
 	if s := event.GetProperty(ics.ComponentPropertySummary); s != nil {
 		summary = strings.ReplaceAll(s.Value, "\\", "")
+	}
+
+	// Apply JSON filter if present
+	if filter != nil {
+		for _, rule := range filter.Rules {
+			if rule.Summary != "" && !strings.Contains(summary, rule.Summary) {
+				continue // summary doesn't match
+			}
+			if rule.Time != "" {
+				timeRange, err := parseTimeRange(rule.Time)
+				if err != nil {
+					fmt.Printf("Invalid time range in filter: %v\n", err)
+					continue
+				}
+				dtStart := event.GetProperty(ics.ComponentPropertyDtStart)
+				if dtStart == nil {
+					continue
+				}
+				eventTime, err := time.Parse("20060102T150405Z", dtStart.Value)
+				if err != nil {
+					// Try without Z
+					eventTime, err = time.Parse("20060102T150405", dtStart.Value)
+					if err != nil {
+						continue
+					}
+				}
+				berlinTime := eventTime.In(a.berlinLocation)
+				if !timeRange.matches(berlinTime) {
+					continue // time doesn't match
+				}
+			}
+			// Rule matches
+			if rule.Action == "keep" {
+				keepEvent = true
+			} else if rule.Action == "delete" {
+				keepEvent = false
+			}
+			break // First matching rule applies
+		}
 	}
 
 	description := ""
@@ -249,18 +459,7 @@ func (a *App) cleanEvent(event *ics.VEvent, filterToken string) bool {
 		location = strings.ReplaceAll(l.Value, "\\", "")
 	}
 
-	// additional check to remove CAx SKDT-Praktikum Sprechstunden
-	keepEvent = !(strings.Contains(summary, "CAx 2 - Praktikum Skizzier- und Darstellungstechniken") && description == "fix; Abhaltung; Teilnahme freiwillig")
-
-	if filterToken == "vo" { // keep only events with "VO" in summary
-		keepEvent = strings.Contains(summary, "VO")
-	} else if filterToken == "pr" { // keep only events with "FA" in summary
-		keepEvent = strings.Contains(summary, "FA")
-	} else if filterToken == "pk" { // keep only events with "PR" in summary
-		keepEvent = strings.Contains(summary, "PR")
-	} else if filterToken == "ot" { // keep only events without "VO" or "FA" in summary
-		keepEvent = !(strings.Contains(summary, "VO") || strings.Contains(summary, "FA") || strings.Contains(summary, "PR"))
-	} // else, keepEvent stays true regardless
+	// legacy filter tokens are converted into filter.Rules in getCleanedCalendar
 
 	//Remove the TAG and anything after e.g.: (IN0001) or [MA0001]
 	summary = reTag.ReplaceAllString(summary, "")

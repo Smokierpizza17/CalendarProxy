@@ -1,0 +1,13 @@
+{
+  "rules": [
+    {
+      "summary": "FA",
+      "action": "keep",
+      "priority": 1
+    },
+    {
+      "action": "delete",
+      "priority": 99
+    }
+  ]
+}

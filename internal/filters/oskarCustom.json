@@ -1,0 +1,28 @@
+{
+  "rules": [
+    {
+      "summary": "Aufbau und Struktur organischer Verbindungen, Tutorübungen",
+      "time": "thu 12:00-13:00",
+      "action": "keep"
+    },
+    {
+      "summary": "Aufbau und Struktur organischer Verbindungen, Tutorübungen",
+      "time": "thu 15:00-16:00",
+      "action": "keep"
+    },
+    {
+      "summary": "Aufbau und Struktur organischer Verbindungen, Tutorübungen",
+      "action": "delete"
+    },
+    {
+      "summary": "Reaktionstechnik und Kinetik, Übung",
+      "time": "tue 12:00-13:00",
+      "action": "delete"
+    },
+    {
+      "summary": "Wärmetransportphänomene - Tutorium",
+      "time": "thu 16:00-17:00",
+      "action": "delete"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "rules": [
+    {
+      "summary": "VO",
+      "action": "delete",
+      "priority": 1
+    },
+    {
+      "summary": "FA",
+      "action": "delete",
+      "priority": 1
+    },
+    {
+      "summary": "PR",
+      "action": "delete",
+      "priority": 1
+    },
+    {
+      "action": "keep",
+      "priority": 99
+    }
+  ]
+}
