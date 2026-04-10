@@ -2,6 +2,8 @@ module github.com/tum-dev/calendar-proxy
 
 go 1.19
 
+replace github.com/tum-dev/calendar-proxy => .
+
 require (
 	github.com/arran4/golang-ical v0.0.0-20221122102835-109346913e54
 	github.com/getsentry/sentry-go v0.21.0
