@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/tum-dev/calendar-proxy/internal"
+	_ "time/tzdata"
 	"log"
 )
 
